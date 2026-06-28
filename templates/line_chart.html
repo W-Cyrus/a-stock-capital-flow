@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1080px; height: 1920px; overflow: hidden; background: #070B18; font-family: 'PingFang SC', 'Heiti SC', sans-serif; }
+
+  .header { position: absolute; top: 0; left: 0; width: 1080px; height: 235px;
+    padding: 40px 45px 20px 45px;
+    background: linear-gradient(180deg, rgba(13,22,48,0.95) 0%, rgba(7,11,24,0) 100%);
+  }
+  .date-row { display: flex; align-items: center; gap: 18px; margin-bottom: 10px; }
+  .date-text { font-size: 52px; font-weight: 800; color: #F8FAFC; letter-spacing: 2px; }
+  .session-tag { font-size: 28px; font-weight: 700; color: #fff;
+    background: linear-gradient(135deg, #1890FF 0%, #36CFC9 100%);
+    padding: 5px 20px; border-radius: 10px; }
+  .main-title { font-size: 70px; font-weight: 900; color: #F8FAFC;
+    text-shadow: 0 0 40px rgba(100,149,237,0.4); letter-spacing: 3px; }
+  .index-box { position: absolute; top: 38px; right: 45px;
+    background: rgba(30,41,59,0.6); border: 1px solid rgba(148,163,184,0.2);
+    border-radius: 14px; padding: 14px 22px; text-align: right; }
+  .index-name { font-size: 22px; color: #94A3B8; margin-bottom: 6px; }
+  .index-value { font-size: 32px; font-weight: 800; color: #F8FAFC; }
+  .index-change { font-size: 24px; font-weight: 700; color: #94A3B8; margin-top: 4px; }
+
+  .legend { position: absolute; top: 255px; left: 45px; right: 45px; display: flex;
+    justify-content: space-between; align-items: center; }
+  .legend-left { display: flex; gap: 32px; }
+  .legend-item { display: flex; align-items: center; font-size: 26px; font-weight: 700; }
+  .legend-dot { width: 16px; height: 16px; border-radius: 50%; margin-right: 11px;
+    box-shadow: 0 0 12px currentColor; }
+  .in-color { color: #FF4D4F; }
+  .out-color { color: #52C41A; }
+  .top-label { font-size: 24px; font-weight: 800; color: #F8FAFC;
+    background: rgba(24,144,255,0.15); border: 1px solid rgba(24,144,255,0.3);
+    padding: 7px 20px; border-radius: 10px; }
+
+  #chart { position: absolute; top: 320px; left: 20px; width: 1040px; height: 1430px; }
+
+  .footer { position: absolute; bottom: 22px; left: 0; width: 1080px;
+    text-align: center; font-size: 23px; color: #64748B; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+</head>
+<body>
+<div class="header">
+  <div class="date-row">
+    <span class="date-text" id="dateText">06月17日</span>
+    <span class="session-tag" id="sessionTag">收盘</span>
+  </div>
+  <div class="main-title">主力板块资金流向</div>
+  <div class="index-box">
+    <div class="index-name">上证指数</div>
+    <div class="index-value" id="indexValue">--</div>
+    <div class="index-change" id="indexChange">--</div>
+  </div>
+</div>
+
+<div class="legend">
+  <div class="legend-left">
+    <div class="legend-item in-color"><span class="legend-dot" style="background:#FF4D4F;color:#FF4D4F"></span>净流入 TOP10</div>
+    <div class="legend-item out-color"><span class="legend-dot" style="background:#52C41A;color:#52C41A"></span>净流出 TOP10</div>
+  </div>
+  <div class="top-label">TOP20</div>
+</div>
+
+<div id="chart"></div>
+<div class="footer">仅作公开信息整理，不构成投资建议</div>
+
+<script>
+// 20 色暖色系（净流入：红/橙/黄/粉/品红渐变，高饱和高区分度）
+const IN_COLORS = [
+  '#FF4D4F', '#FF7A45', '#FAAD14', '#FA8C16', '#FA541C',
+  '#F759AB', '#EB2F96', '#FF85C0', '#FFC53D', '#D3F261',
+  '#FF9C6E', '#FFC069', '#FFA940', '#FFD666', '#FF69B4',
+  '#FF6B6B', '#FFA07A', '#FFE66D', '#F06292', '#EC407A'
+];
+// 20 色冷色系（净流出：绿/青/蓝/靛渐变，高饱和高区分度）
+const OUT_COLORS = [
+  '#52C41A', '#73D13D', '#95DE64', '#B7EB8F', '#36CFC9',
+  '#5CDBD3', '#87E8DE', '#13C2C2', '#40A9FF', '#69C0FF',
+  '#2F54EB', '#597EF7', '#722ED1', '#9254DE', '#B37FEB',
+  '#5B8FF9', '#6DC8EC', '#85A5FF', '#ADC6FF', '#BEA5E8'
+];
+
+let chart = echarts.init(document.getElementById('chart'));
+let globalData = null;
+let yLimit = null;
+let labelPositions = []; // 缓存标签 Y 位置，用于防重叠
+
+function formatValue(v) {
+  if (Math.abs(v) >= 100) return (v > 0 ? '+' : '') + Math.round(v) + '亿';
+  return (v > 0 ? '+' : '') + v.toFixed(1) + '亿';
+}
+
+/**
+ * 防重叠标签布局
+ * 按当前 Y 值排序，间距不足时推开，clamp 到 Y 轴范围内
+ */
+function computeLabelPositions(sectors, curIndex, yMin, yMax) {
+  const n = sectors.length;
+  const chartH = 1430; // 图表高度
+  const yRange = yMax - yMin;
+  const minGap = 36; // 最小标签间距（像素）
+  const minGapValue = (minGap / chartH) * yRange;
+
+  // 收集当前值
+  let items = [];
+  for (let i = 0; i < n; i++) {
+    const v = sectors[i].values[curIndex];
+    if (v !== null && v !== undefined) {
+      items.push({ idx: i, value: v, y: v });
+    }
+  }
+  // 按 Y 值降序排序
+  items.sort((a, b) => b.y - a.y);
+
+  // 第一轮：分配初始位置
+  let positions = new Array(n).fill(null);
+  for (const item of items) {
+    positions[item.idx] = item.y;
+  }
+
+  // 第二轮：从上到下推开重叠
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 0; i < items.length - 1; i++) {
+      const gap = positions[items[i].idx] - positions[items[i+1].idx];
+      if (gap < minGapValue) {
+        const push = (minGapValue - gap) / 2;
+        positions[items[i].idx] += push;
+        positions[items[i+1].idx] -= push;
+      }
+    }
+    // 从下到上再推一次
+    for (let i = items.length - 1; i > 0; i--) {
+      const gap = positions[items[i-1].idx] - positions[items[i].idx];
+      if (gap < minGapValue) {
+        const push = (minGapValue - gap) / 2;
+        positions[items[i-1].idx] += push;
+        positions[items[i].idx] -= push;
+      }
+    }
+  }
+
+  // Clamp 到 Y 轴范围内，防止标签被推到可视区域外
+  for (let i = 0; i < n; i++) {
+    if (positions[i] !== null) {
+      positions[i] = Math.max(yMin, Math.min(yMax, positions[i]));
+    }
+  }
+
+  return positions;
+}
+
+window.__set_data = function(d) {
+  globalData = d;
+  document.getElementById('dateText').textContent = d.dateText;
+  document.getElementById('sessionTag').textContent = d.sessionTag;
+  document.getElementById('indexValue').textContent = d.indexValue || '--';
+  const idxChg = document.getElementById('indexChange');
+  idxChg.textContent = d.indexChange || '--';
+  if (d.indexChange && d.indexChange.includes('+')) {
+    idxChg.style.color = '#FF7875';
+  } else if (d.indexChange && d.indexChange.includes('-')) {
+    idxChg.style.color = '#73D13D';
+  }
+
+  const allValues = d.sectors.flatMap(s => s.values.filter(v => v !== null));
+  const maxAbs = Math.max(...allValues.map(Math.abs));
+  yLimit = Math.ceil(maxAbs * 1.12 / 20) * 20;
+
+  chart.setOption({
+    backgroundColor: 'transparent',
+    grid: { top: 35, bottom: 90, left: 95, right: 280 },
+    xAxis: {
+      type: 'category',
+      data: d.timestamps,
+      boundaryGap: false,
+      axisLine: { lineStyle: { color: '#1E293B', width: 2 } },
+      axisLabel: { color: '#94A3B8', fontSize: 22, fontWeight: 700, rotate: 38, interval: 'auto' },
+      axisTick: { show: false },
+      splitLine: { show: false }
+    },
+    yAxis: {
+      type: 'value',
+      min: -yLimit,
+      max: yLimit,
+      axisLine: { show: false },
+      axisLabel: { color: '#94A3B8', fontSize: 22, fontWeight: 700, formatter: v => Math.round(v) + '亿' },
+      splitLine: { lineStyle: { color: 'rgba(30,41,59,0.5)', type: 'dashed', width: 1 } },
+      axisTick: { show: false }
+    },
+    series: []
+  }, true);
+};
+
+window.__set_progress = function(t) {
+  if (!globalData) return;
+  const totalPoints = globalData.timestamps.length;
+  const visiblePoints = Math.max(2, Math.floor(totalPoints * t));
+  const curIndex = visiblePoints - 1;
+
+  // 计算防重叠标签位置
+  const labelYs = computeLabelPositions(globalData.sectors, curIndex, -yLimit, yLimit);
+
+  const series = [];
+  let inIdx = 0, outIdx = 0;
+  globalData.sectors.forEach((s, idx) => {
+    const isIn = s.isIn !== undefined ? s.isIn : (idx < 10);
+    const colorList = isIn ? IN_COLORS : OUT_COLORS;
+    const colorIdx = isIn ? inIdx++ : outIdx++;
+    const baseColor = colorList[colorIdx % colorList.length];
+    const isTop3 = isIn && colorIdx < 3;
+
+    const values = s.values.map((v, i) => i < visiblePoints ? v : null);
+    const currentValue = values[curIndex];
+
+    // 主线
+    series.push({
+      name: s.name,
+      type: 'line',
+      smooth: 0.35,
+      symbol: 'circle',
+      symbolSize: isTop3 ? 12 : 7,
+      showSymbol: false,
+      lineStyle: {
+        width: isTop3 ? 5 : 3,
+        color: baseColor,
+        shadowColor: baseColor,
+        shadowBlur: isTop3 ? 25 : 15
+      },
+      itemStyle: { color: baseColor, borderWidth: 0 },
+      emphasis: { focus: 'series', lineStyle: { width: 7 } },
+      data: values,
+      animation: false,
+      markLine: idx === 0 ? {
+        silent: true,
+        symbol: 'none',
+        data: [{ yAxis: 0 }],
+        lineStyle: { color: 'rgba(248,250,252,0.5)', width: 2 },
+        label: { show: false }
+      } : undefined
+    });
+
+    // 当前端点圆点
+    if (currentValue !== null && currentValue !== undefined) {
+      series.push({
+        type: 'scatter',
+        data: [[globalData.timestamps[curIndex], currentValue]],
+        symbolSize: isTop3 ? 16 : 10,
+        itemStyle: {
+          color: baseColor,
+          shadowColor: baseColor,
+          shadowBlur: 20
+        },
+        z: 50,
+        animation: false
+      });
+    }
+
+    // 跟随标签（始终在线端点右侧，防重叠）
+    if (currentValue !== null && currentValue !== undefined && labelYs[idx] !== null) {
+      const displayLabel = `{box| ${s.name} ${formatValue(currentValue)} }`;
+
+      series.push({
+        type: 'scatter',
+        data: [[globalData.timestamps[curIndex], labelYs[idx]]],
+        symbolSize: 1,
+        label: {
+          show: true,
+          position: 'right',
+          distance: 12,
+          formatter: function() { return displayLabel; },
+          rich: {
+            box: {
+              color: '#F8FAFC',
+              fontSize: 20,
+              fontWeight: 700,
+              padding: [6, 12],
+              borderRadius: 8,
+              backgroundColor: baseColor + '30',
+              borderColor: baseColor,
+              borderWidth: 1,
+              shadowColor: baseColor,
+              shadowBlur: 8
+            }
+          }
+        },
+        itemStyle: { color: 'transparent' },
+        z: 60 + idx,
+        animation: false
+      });
+    }
+  });
+
+  // 当前时间扫描线
+  if (curIndex >= 0) {
+    series.push({
+      type: 'line',
+      markLine: {
+        silent: true,
+        symbol: 'none',
+        data: [{ xAxis: globalData.timestamps[curIndex] }],
+        lineStyle: { color: '#1890FF', width: 2, type: 'dashed' },
+        label: { show: false }
+      },
+      animation: false
+    });
+  }
+
+  // TOP3 净流入脉动光点
+  let pulseIdx = 0;
+  globalData.sectors.forEach((s) => {
+    if (!s.isIn) return;
+    if (pulseIdx >= 3) return;
+    const baseColor = IN_COLORS[pulseIdx];
+    const v = s.values[curIndex];
+    if (v !== null && v !== undefined) {
+      series.push({
+        type: 'effectScatter',
+        data: [[globalData.timestamps[curIndex], v]],
+        symbolSize: 14,
+        rippleEffect: { brushType: 'stroke', scale: 3.5, period: 2 },
+        itemStyle: { color: baseColor },
+        z: 101,
+        animation: false
+      });
+    }
+    pulseIdx++;
+  });
+
+  chart.setOption({ series: series });
+};
+</script>
+</body>
+</html>
