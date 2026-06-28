@@ -3,7 +3,6 @@
 import json, os, sys, re, urllib.request, urllib.error
 
 ENV_PATH = os.path.expanduser("~/.hermes/.env")
-CHAT_ID = "REDACTED"
 BASE = "https://open.feishu.cn/open-apis"
 
 
@@ -62,10 +61,10 @@ def upload_file(t, video_path):
     return r["data"]["file_key"]
 
 
-def send_msg(t, msg_type, content_dict):
+def send_msg(t, chat_id, msg_type, content_dict):
     """Send message to Feishu chat."""
     body = {
-        "receive_id": CHAT_ID,
+        "receive_id": chat_id,
         "msg_type": msg_type,
         "content": json.dumps(content_dict)
     }
@@ -110,6 +109,12 @@ def main():
     date_str = extract_date(fname)
     env = load_env()
 
+    # All credentials from env, no hardcoded secrets
+    chat_id = env.get("FEISHU_CHAT_ID")
+    if not chat_id:
+        print("FEISHU_CHAT_ID not found in env", file=sys.stderr)
+        sys.exit(1)
+
     # Get tenant access token
     r = api("POST", "/auth/v3/tenant_access_token/internal", "", {
         "app_id": env["FEISHU_APP_ID"],
@@ -121,9 +126,9 @@ def main():
     print(f"Uploading {fname} ({size_mb:.1f}MB)...")
     file_key = upload_file(t, video_path)
 
-    send_msg(t, "media", {"file_key": file_key})
+    send_msg(t, chat_id, "media", {"file_key": file_key})
     caption = build_caption(session, date_str)
-    send_msg(t, "text", {"text": caption})
+    send_msg(t, chat_id, "text", {"text": caption})
     print("Done.")
 
 
