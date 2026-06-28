@@ -5,4 +5,5 @@ __pycache__/
 data/
 videos/
 logs/
-*.logassets/bgm_*.mp3
+*.log
+assets/bgm_*.mp3
