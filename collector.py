@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""collector.py V3 — 主力板块资金流向采集器
-- curl 直连东方财富 push2 API
-- 采集全部主力板块，每分钟保存净流入/流出 TOP10
-- CSV 存储：timestamp + 板块名1_值 + 板块名2_值 + ...
-- 文件锁防重复启动，追加模式防覆盖
+"""collector.py V4 — 主力板块资金流向采集器
+- 采集全部概念板块，每分钟保存全量数据
+- 不做 TOP20 筛选，render 阶段再按最终行情选取
+- CSV 宽表：timestamp + 全部板块 + __SSE_* 元数据列
+- 文件锁防重复，追加模式
 """
 import subprocess, json, time, os, sys, logging, csv, fcntl
 from datetime import datetime
@@ -36,7 +36,6 @@ API_TEMPLATE = (
     "&_={ts}"
 )
 
-TOP_N = 10
 _lock_fd = None
 
 # 上证指数实时数据
@@ -86,7 +85,7 @@ def setup_logging(session: str) -> logging.Logger:
 
 
 def fetch_all_pages(logger: logging.Logger) -> dict:
-    """分页获取全部板块净流入（亿元）"""
+    """分页获取全部板块净流入（亿元）→ {板块名: 净流入}"""
     all_items = []
     page = 1
     ts = int(time.time() * 1000)
@@ -121,17 +120,6 @@ def fetch_all_pages(logger: logging.Logger) -> dict:
         if name:
             result[name] = round(flow_raw / 1e8, 4)
     return result
-
-
-def select_top20(flows: dict) -> dict:
-    """取净流入/净流出各 TOP10，合并为 20 个板块"""
-    items = sorted(flows.items(), key=lambda x: x[1], reverse=True)
-    top_in = items[:TOP_N]
-    top_out = items[-TOP_N:][::-1]  # 流出最多的在前，按流出量降序
-    selected = {}
-    for name, val in top_in + top_out:
-        selected[name] = val
-    return selected
 
 
 def acquire_lock(session: str, logger: logging.Logger) -> bool:
@@ -186,6 +174,39 @@ def collect(session: str):
     logger.info(f"Start collecting → {csv_path}  (end {end_h:02d}:{end_m:02d})")
     last_data_hash = None
 
+    def save_row(data: dict, sse: dict):
+        """写入一行数据到 CSV，处理 fieldnames 的动态扩展"""
+        nonlocal fieldnames
+        row = {"timestamp": datetime.now().strftime("%H:%M")}
+        row.update(data)
+        if sse:
+            row["__SSE_PRICE__"] = sse["price"]
+            row["__SSE_CHANGE__"] = sse["change"]
+            row["__SSE_PCT__"] = sse["change_pct"]
+
+        if fieldnames is None:
+            fieldnames = ["timestamp"] + sorted(data.keys()) + ["__SSE_PRICE__", "__SSE_CHANGE__", "__SSE_PCT__"]
+            with open(csv_path, "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=fieldnames)
+                w.writeheader()
+        else:
+            new_cols = [k for k in sorted(data.keys()) if k not in fieldnames]
+            if new_cols:
+                with open(csv_path, "r", newline="") as f:
+                    reader = csv.DictReader(f)
+                    old_rows = list(reader)
+                fieldnames = fieldnames[:-3] + new_cols + fieldnames[-3:]
+                with open(csv_path, "w", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=fieldnames)
+                    w.writeheader()
+                    w.writerows(old_rows)
+                logger.info(f"New sectors appeared: {new_cols}")
+
+        with open(csv_path, "a", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            w.writerow(row)
+        logger.info(f"✓ {row['timestamp']}  |  {len(data)} sectors saved")
+
     while datetime.now() < end_time:
         loop_start = time.time()
         try:
@@ -201,28 +222,8 @@ def collect(session: str):
                 logger.warning(f"Data identical to previous round (possible cache)! sample: {sample}")
             last_data_hash = data_hash
 
-            top20 = select_top20(data)
             sse = fetch_sse_index(logger)
-            row = {"timestamp": datetime.now().strftime("%H:%M")}
-            row.update(top20)
-            # 保存上证指数实时数据
-            if sse:
-                row["__SSE_PRICE__"] = sse["price"]
-                row["__SSE_CHANGE__"] = sse["change"]
-                row["__SSE_PCT__"] = sse["change_pct"]
-
-            if fieldnames is None:
-                # SSE 列始终写入 header，即使首次采集失败也不会遗漏
-                fieldnames = ["timestamp"] + sorted(top20.keys()) + ["__SSE_PRICE__", "__SSE_CHANGE__", "__SSE_PCT__"]
-                with open(csv_path, "w", newline="") as f:
-                    w = csv.DictWriter(f, fieldnames=fieldnames)
-                    w.writeheader()
-
-            with open(csv_path, "a", newline="") as f:
-                w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
-                w.writerow(row)
-
-            logger.info(f"✓ {row['timestamp']}  |  {len(data)} total  |  TOP20 saved")
+            save_row(data, sse)
 
         except Exception as e:
             logger.error(f"Loop error: {e}")
@@ -230,6 +231,16 @@ def collect(session: str):
         elapsed = time.time() - loop_start
         sleep_time = max(0, 60 - elapsed)
         time.sleep(sleep_time)
+
+    # 收盘后补采最后一轮，确保拿到收盘价
+    logger.info("Final collection at close...")
+    try:
+        data = fetch_all_pages(logger)
+        if data:
+            sse = fetch_sse_index(logger)
+            save_row(data, sse)
+    except Exception as e:
+        logger.error(f"Final collection error: {e}")
 
     logger.info(f"Collection finished → {csv_path}")
 

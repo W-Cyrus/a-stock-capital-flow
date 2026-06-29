@@ -95,17 +95,31 @@ function formatValue(v) {
 }
 
 /**
- * 防重叠标签布局
+ * 原始位置（动画阶段：标签紧贴曲线，允许重叠）
+ */
+function computeRawPositions(sectors, curIndex) {
+  const n = sectors.length;
+  let positions = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    const v = sectors[i].values[curIndex];
+    if (v !== null && v !== undefined) {
+      positions[i] = v;
+    }
+  }
+  return positions;
+}
+
+/**
+ * 防重叠标签布局（定格阶段：充分推开，方便阅读）
  * 按当前 Y 值排序，间距不足时推开，clamp 到 Y 轴范围内
  */
 function computeLabelPositions(sectors, curIndex, yMin, yMax) {
   const n = sectors.length;
-  const chartH = 1430; // 图表高度
+  const chartH = 1430;
   const yRange = yMax - yMin;
-  const minGap = 36; // 最小标签间距（像素）
+  const minGap = 56; // 最小标签间距（像素），增大防止重叠
   const minGapValue = (minGap / chartH) * yRange;
 
-  // 收集当前值
   let items = [];
   for (let i = 0; i < n; i++) {
     const v = sectors[i].values[curIndex];
@@ -113,17 +127,15 @@ function computeLabelPositions(sectors, curIndex, yMin, yMax) {
       items.push({ idx: i, value: v, y: v });
     }
   }
-  // 按 Y 值降序排序
   items.sort((a, b) => b.y - a.y);
 
-  // 第一轮：分配初始位置
   let positions = new Array(n).fill(null);
   for (const item of items) {
     positions[item.idx] = item.y;
   }
 
-  // 第二轮：从上到下推开重叠
-  for (let pass = 0; pass < 3; pass++) {
+  // 5 轮双向推开，充分消除重叠
+  for (let pass = 0; pass < 5; pass++) {
     for (let i = 0; i < items.length - 1; i++) {
       const gap = positions[items[i].idx] - positions[items[i+1].idx];
       if (gap < minGapValue) {
@@ -132,7 +144,6 @@ function computeLabelPositions(sectors, curIndex, yMin, yMax) {
         positions[items[i+1].idx] -= push;
       }
     }
-    // 从下到上再推一次
     for (let i = items.length - 1; i > 0; i--) {
       const gap = positions[items[i-1].idx] - positions[items[i].idx];
       if (gap < minGapValue) {
@@ -143,10 +154,19 @@ function computeLabelPositions(sectors, curIndex, yMin, yMax) {
     }
   }
 
-  // Clamp 到 Y 轴范围内，防止标签被推到可视区域外
+  // 软 Clamp：优先保证间距，被压出范围的向外放
   for (let i = 0; i < n; i++) {
     if (positions[i] !== null) {
       positions[i] = Math.max(yMin, Math.min(yMax, positions[i]));
+    }
+  }
+  // clamp 后可能又挤在一起，最后推一轮
+  for (let i = 0; i < items.length - 1; i++) {
+    const gap = positions[items[i].idx] - positions[items[i+1].idx];
+    if (gap < minGapValue) {
+      // 优先把下面的往下推、上面的往上推
+      positions[items[i+1].idx] = Math.max(yMin, positions[items[i+1].idx] - (minGapValue - gap));
+      positions[items[i].idx] = Math.min(yMax, positions[items[i].idx] + (minGapValue - gap));
     }
   }
 
@@ -200,9 +220,12 @@ window.__set_progress = function(t) {
   const totalPoints = globalData.timestamps.length;
   const visiblePoints = Math.max(2, Math.floor(totalPoints * t));
   const curIndex = visiblePoints - 1;
+  const useAntiOverlap = window.__freeze_mode === true;
 
-  // 计算防重叠标签位置
-  const labelYs = computeLabelPositions(globalData.sectors, curIndex, -yLimit, yLimit);
+  // 动画阶段：标签紧贴曲线；定格阶段：防重叠推开
+  const labelYs = useAntiOverlap
+    ? computeLabelPositions(globalData.sectors, curIndex, -yLimit, yLimit)
+    : computeRawPositions(globalData.sectors, curIndex);
 
   const series = [];
   let inIdx = 0, outIdx = 0;
@@ -275,9 +298,9 @@ window.__set_progress = function(t) {
           rich: {
             box: {
               color: '#F8FAFC',
-              fontSize: 20,
+              fontSize: 18,
               fontWeight: 700,
-              padding: [6, 12],
+              padding: [4, 10],
               borderRadius: 8,
               backgroundColor: baseColor + '30',
               borderColor: baseColor,

@@ -3,6 +3,9 @@
 # Usage: ./publish.sh morning | afternoon
 set -euo pipefail
 
+# cron agent 的 terminal 工具不会自动继承 Hermes 环境变量，必须显式 source
+source ~/.hermes/.env
+
 SESSION="${1:-morning}"
 SCRIPT_DIR="/Users/wangxianshuo/Projects/personal/a-stock-capital-flow"
 VENV_PYTHON="$SCRIPT_DIR/venv/bin/python"
