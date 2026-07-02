@@ -177,11 +177,11 @@ def load_data(date_str, session):
         return None
     final_vals = {c: df[c].dropna().iloc[-1] if not df[c].dropna().empty else 0
                   for c in sector_cols}
-    # 净流入/净流出各取 TOP10（分开选，不受绝对值大小影响）
+    # 净流入/净流出各取 TOP20（分开选，不受绝对值大小影响）
     pos = [(c, v) for c, v in final_vals.items() if v >= 0]
     neg = [(c, v) for c, v in final_vals.items() if v < 0]
-    top_in = [c for c, _ in sorted(pos, key=lambda x: -x[1])[:10]]
-    top_out = [c for c, _ in sorted(neg, key=lambda x: x[1])[:10]]
+    top_in = [c for c, _ in sorted(pos, key=lambda x: -x[1])[:20]]
+    top_out = [c for c, _ in sorted(neg, key=lambda x: x[1])[:20]]
     sorted_sectors = top_in + top_out
     data = {}
     for name in sorted_sectors:
@@ -327,6 +327,7 @@ def render_line_video(timestamps, data, ylim, sectors, date_str, session, out_pa
         "ffmpeg", "-y", "-framerate", str(FPS),
         "-i", f"{tmpdir}/frame_%05d.png",
         "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-vf", "scale=1030:1870,pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black",
         "-r", str(OUTPUT_FPS), out_path
     ], capture_output=True)
 
@@ -402,6 +403,7 @@ def render_bar_video(data, sectors, date_str, session, out_path, sse_price="--",
         "ffmpeg", "-y", "-framerate", str(FPS),
         "-i", f"{tmpdir}/frame_%05d.png",
         "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-vf", "scale=1030:1870,pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black",
         "-r", str(OUTPUT_FPS), out_path
     ], capture_output=True)
 
