@@ -17,7 +17,6 @@ LOCK_DIR = Path("/tmp")
 CURL_BIN = "/usr/bin/curl"
 CURL_BASE = [
     CURL_BIN, "-s", "--noproxy", "*", "--max-time", "15",
-    "--no-keepalive",
     "-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
     "-H", "Referer: https://data.eastmoney.com/",
     "-H", "Cache-Control: no-cache, no-store",
@@ -84,8 +83,9 @@ def setup_logging(session: str) -> logging.Logger:
     return logger
 
 
-def fetch_all_pages(logger: logging.Logger) -> dict:
-    """分页获取全部板块净流入（亿元）→ {板块名: 净流入}"""
+def fetch_all_pages(logger: logging.Logger, max_retries: int = 3) -> dict:
+    """分页获取全部板块净流入（亿元）→ {板块名: 净流入}
+    每页失败后重试 max_retries 次，应对网络抖动。"""
     all_items = []
     page = 1
     ts = int(time.time() * 1000)
@@ -93,25 +93,40 @@ def fetch_all_pages(logger: logging.Logger) -> dict:
     while True:
         url = API_TEMPLATE.format(pn=page, ts=ts)
         args = CURL_BASE + [url]
-        try:
-            r = subprocess.run(args, capture_output=True, text=True, timeout=20)
-            if r.returncode != 0 or not r.stdout.strip():
-                logger.warning(f"curl p{page} failed: rc={r.returncode}")
+        success = False
+        for attempt in range(max_retries + 1):
+            try:
+                r = subprocess.run(args, capture_output=True, text=True, timeout=20)
+                if r.returncode != 0 or not r.stdout.strip():
+                    if attempt < max_retries:
+                        logger.warning(f"curl p{page} failed (attempt {attempt+1}/{max_retries+1}): rc={r.returncode}, retrying...")
+                        time.sleep(1.5)
+                        continue
+                    logger.warning(f"curl p{page} failed after {max_retries+1} attempts: rc={r.returncode}")
+                    break
+                data = json.loads(r.stdout)
+                d = data.get("data", {})
+                items = d.get("diff", [])
+                total = d.get("total", 0)
+                if not items:
+                    break
+                all_items.extend(items)
+                if len(items) < 100 or len(all_items) >= total:
+                    success = True
+                    break
+                success = True
                 break
-            data = json.loads(r.stdout)
-            d = data.get("data", {})
-            items = d.get("diff", [])
-            total = d.get("total", 0)
-            if not items:
+            except Exception as e:
+                if attempt < max_retries:
+                    logger.warning(f"fetch p{page} error (attempt {attempt+1}/{max_retries+1}): {e}, retrying...")
+                    time.sleep(1.5)
+                    continue
+                logger.error(f"fetch p{page} error after {max_retries+1} attempts: {e}")
                 break
-            all_items.extend(items)
-            if len(items) < 100 or len(all_items) >= total:
-                break
-            page += 1
-            time.sleep(0.3)
-        except Exception as e:
-            logger.error(f"fetch p{page} error: {e}")
+        if not success:
             break
+        page += 1
+        time.sleep(0.3)
 
     result = {}
     for it in all_items:

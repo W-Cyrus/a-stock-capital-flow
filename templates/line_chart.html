@@ -96,6 +96,7 @@ function formatValue(v) {
 
 /**
  * 原始位置（动画阶段：标签紧贴曲线，允许重叠）
+ * 返回 chart-space 坐标
  */
 function computeRawPositions(sectors, curIndex) {
   const n = sectors.length;
@@ -103,7 +104,7 @@ function computeRawPositions(sectors, curIndex) {
   for (let i = 0; i < n; i++) {
     const v = sectors[i].values[curIndex];
     if (v !== null && v !== undefined) {
-      positions[i] = v;
+      positions[i] = window.__toChart(v);
     }
   }
   return positions;
@@ -111,7 +112,8 @@ function computeRawPositions(sectors, curIndex) {
 
 /**
  * 防重叠标签布局（定格阶段：充分推开，方便阅读）
- * 按当前 Y 值排序，间距不足时推开，clamp 到 Y 轴范围内
+ * 按 chart-space Y 值排序，间距不足时推开，clamp 到 Y 轴范围内
+ * yMin, yMax 均为 chart-space 值
  */
 function computeLabelPositions(sectors, curIndex, yMin, yMax) {
   const n = sectors.length;
@@ -124,7 +126,8 @@ function computeLabelPositions(sectors, curIndex, yMin, yMax) {
   for (let i = 0; i < n; i++) {
     const v = sectors[i].values[curIndex];
     if (v !== null && v !== undefined) {
-      items.push({ idx: i, value: v, y: v });
+      const cv = window.__toChart(v);
+      items.push({ idx: i, value: cv, y: cv });
     }
   }
   items.sort((a, b) => b.y - a.y);
@@ -164,7 +167,6 @@ function computeLabelPositions(sectors, curIndex, yMin, yMax) {
   for (let i = 0; i < items.length - 1; i++) {
     const gap = positions[items[i].idx] - positions[items[i+1].idx];
     if (gap < minGapValue) {
-      // 优先把下面的往下推、上面的往上推
       positions[items[i+1].idx] = Math.max(yMin, positions[items[i+1].idx] - (minGapValue - gap));
       positions[items[i].idx] = Math.min(yMax, positions[items[i].idx] + (minGapValue - gap));
     }
@@ -186,9 +188,32 @@ window.__set_data = function(d) {
     idxChg.style.color = '#73D13D';
   }
 
-  const allValues = d.sectors.flatMap(s => s.values.filter(v => v !== null));
-  const maxAbs = Math.max(...allValues.map(Math.abs));
-  yLimit = Math.ceil(maxAbs * 1.12 / 20) * 20;
+  // === 分离 Y 轴上下半轴范围 ===
+  // 上半轴（流入）和下半轴（流出）各自独立动态缩放
+  const posValues = d.sectors.flatMap(s => s.values.filter(v => v !== null && v > 0));
+  const negValues = d.sectors.flatMap(s => s.values.filter(v => v !== null && v < 0));
+  const posMax = posValues.length ? Math.max(...posValues) : 5;
+  const negAbsMax = negValues.length ? Math.max(...negValues.map(Math.abs)) : 5;
+  const posRange = Math.max(Math.ceil(posMax * 1.15 / 5) * 5, 5);
+  const negRange = Math.max(Math.ceil(negAbsMax * 1.15 / 5) * 5, 5);
+  const scaleRatio = negRange / posRange;
+
+  window.__posRange = posRange;
+  window.__negRange = negRange;
+  window.__scaleRatio = scaleRatio;
+
+  // 坐标变换：真实值 → chart-space（流出压缩 scaleRatio 倍，使上下各占一半）
+  window.__toChart = function(v) {
+    if (v === null || v === undefined) return null;
+    return v >= 0 ? v : v / scaleRatio;
+  };
+  // chart-space → 真实值（用于 Y 轴标签还原）
+  window.__fromChart = function(v) {
+    if (v === null || v === undefined) return null;
+    return v >= 0 ? v : v * scaleRatio;
+  };
+
+  yLimit = posRange; // chart-space 范围 [-posRange, posRange]
 
   chart.setOption({
     backgroundColor: 'transparent',
@@ -204,15 +229,38 @@ window.__set_data = function(d) {
     },
     yAxis: {
       type: 'value',
-      min: -yLimit,
-      max: yLimit,
+      min: -posRange,
+      max: posRange,
       axisLine: { show: false },
-      axisLabel: { color: '#94A3B8', fontSize: 22, fontWeight: 700, formatter: v => Math.round(v) + '亿' },
+      axisLabel: {
+        color: '#94A3B8',
+        fontSize: 22,
+        fontWeight: 700,
+        formatter: function(v) {
+          // Y 轴标签还原真实值：下半轴用 __fromChart 反变换
+          if (v >= 0) return Math.round(v) + '亿';
+          return '-' + Math.round(-v * window.__scaleRatio) + '亿';
+        }
+      },
       splitLine: { lineStyle: { color: 'rgba(30,41,59,0.5)', type: 'dashed', width: 1 } },
       axisTick: { show: false }
     },
     series: []
   }, true);
+
+  // 强制 merge formatter（确保不被 setOption(true) 丢弃）
+  chart.setOption({
+    yAxis: {
+      axisLabel: {
+        formatter: function(v) {
+          if (v >= 0) return Math.round(v) + '亿';
+          return '-' + Math.round(-v * window.__scaleRatio) + '亿';
+        }
+      }
+    }
+  });
+
+  console.log('Y-axis split: posRange=' + posRange + ', negRange=' + negRange + ', ratio=' + scaleRatio.toFixed(2));
 };
 
 window.__set_progress = function(t) {
@@ -222,7 +270,7 @@ window.__set_progress = function(t) {
   const curIndex = visiblePoints - 1;
   const useAntiOverlap = window.__freeze_mode === true;
 
-  // 动画阶段：标签紧贴曲线；定格阶段：防重叠推开
+  // labelYs 使用 chart-space 坐标
   const labelYs = useAntiOverlap
     ? computeLabelPositions(globalData.sectors, curIndex, -yLimit, yLimit)
     : computeRawPositions(globalData.sectors, curIndex);
@@ -236,10 +284,12 @@ window.__set_progress = function(t) {
     const baseColor = colorList[colorIdx % colorList.length];
     const isTop3 = isIn && colorIdx < 3;
 
-    const values = s.values.map((v, i) => i < visiblePoints ? v : null);
-    const currentValue = values[curIndex];
+    // chart-space values（流出已压缩）
+    const values = s.values.map((v, i) => i < visiblePoints ? window.__toChart(v) : null);
+    const chartCur = values[curIndex];
+    const realCur = s.values[curIndex]; // 真实值用于标签文字
 
-    // 主线
+    // 主线（chart-space 数据）
     series.push({
       name: s.name,
       type: 'line',
@@ -266,11 +316,11 @@ window.__set_progress = function(t) {
       } : undefined
     });
 
-    // 当前端点圆点
-    if (currentValue !== null && currentValue !== undefined) {
+    // 当前端点圆点（chart-space）
+    if (chartCur !== null && chartCur !== undefined) {
       series.push({
         type: 'scatter',
-        data: [[globalData.timestamps[curIndex], currentValue]],
+        data: [[globalData.timestamps[curIndex], chartCur]],
         symbolSize: isTop3 ? 16 : 10,
         itemStyle: {
           color: baseColor,
@@ -282,9 +332,9 @@ window.__set_progress = function(t) {
       });
     }
 
-    // 跟随标签（始终在线端点右侧，防重叠）
-    if (currentValue !== null && currentValue !== undefined && labelYs[idx] !== null) {
-      const displayLabel = `{box| ${s.name} ${formatValue(currentValue)} }`;
+    // 跟随标签（chart-space 位置 + 真实值文字）
+    if (chartCur !== null && chartCur !== undefined && labelYs[idx] !== null) {
+      const displayLabel = `{box| ${s.name} ${formatValue(realCur)} }`;
 
       series.push({
         type: 'scatter',
@@ -332,17 +382,17 @@ window.__set_progress = function(t) {
     });
   }
 
-  // TOP3 净流入脉动光点
+  // TOP3 净流入脉动光点（chart-space）
   let pulseIdx = 0;
   globalData.sectors.forEach((s) => {
     if (!s.isIn) return;
     if (pulseIdx >= 3) return;
     const baseColor = IN_COLORS[pulseIdx];
-    const v = s.values[curIndex];
-    if (v !== null && v !== undefined) {
+    const cv = window.__toChart(s.values[curIndex]);
+    if (cv !== null && cv !== undefined) {
       series.push({
         type: 'effectScatter',
-        data: [[globalData.timestamps[curIndex], v]],
+        data: [[globalData.timestamps[curIndex], cv]],
         symbolSize: 14,
         rippleEffect: { brushType: 'stroke', scale: 3.5, period: 2 },
         itemStyle: { color: baseColor },
@@ -353,7 +403,10 @@ window.__set_progress = function(t) {
     pulseIdx++;
   });
 
-  chart.setOption({ series: series });
+  chart.setOption({
+    yAxis: { min: -yLimit, max: yLimit },
+    series: series
+  });
 };
 </script>
 </body>

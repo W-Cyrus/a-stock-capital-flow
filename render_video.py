@@ -248,7 +248,12 @@ def prepare_line_data(timestamps, data, ylim, sectors, target_points=600):
 
 def prepare_bar_data(data, sectors):
     """准备柱状图数据：净流入/流出各 TOP10，每个分区独立计算百分比"""
-    pairs = [(n, float(data[n][-1])) for n in sectors if not np.isnan(data[n][-1])]
+    pairs = []
+    for n in sectors:
+        vals = data[n]
+        valid = vals[~np.isnan(vals)]
+        if len(valid) > 0:
+            pairs.append((n, float(valid[-1])))
     top_in = sorted([p for p in pairs if p[1] >= 0], key=lambda x: -x[1])[:10]
     top_out = sorted([p for p in pairs if p[1] < 0], key=lambda x: x[1])[:10]
 
@@ -284,8 +289,10 @@ def render_line_video(timestamps, data, ylim, sectors, date_str, session, out_pa
     freeze_frames = int(FREEZE_SEC * FPS)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": CANVAS_W, "height": CANVAS_H})
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(viewport={"width": CANVAS_W, "height": CANVAS_H}, device_scale_factor=1)
+        context.add_init_script("document.fonts.ready = Promise.resolve();")
+        page = context.new_page()
         page.goto(f"file://{html_path}")
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(1000)
@@ -295,14 +302,14 @@ def render_line_video(timestamps, data, ylim, sectors, date_str, session, out_pa
         page.evaluate("window.__set_progress(0)")
         page.wait_for_timeout(300)
         for f in range(title_frames):
-            page.screenshot(path=f"{tmpdir}/frame_{f:05d}.png", type="png")
+            page.screenshot(path=f"{tmpdir}/frame_{f:05d}.png", type="png", timeout=0)
 
         for f in range(anim_frames):
             raw = (f + 1) / anim_frames
             t = raw ** 0.7 / (raw ** 0.7 + (1 - raw) ** 0.7)
             page.evaluate(f"window.__set_progress({t})")
             page.wait_for_timeout(15)
-            page.screenshot(path=f"{tmpdir}/frame_{title_frames + f:05d}.png", type="png")
+            page.screenshot(path=f"{tmpdir}/frame_{title_frames + f:05d}.png", type="png", timeout=0)
             if (f + 1) % 100 == 0:
                 print(f"  {f+1}/{anim_frames}")
 
@@ -312,7 +319,7 @@ def render_line_video(timestamps, data, ylim, sectors, date_str, session, out_pa
         page.evaluate("window.__freeze_mode = true; window.__set_progress(1.0)")
         page.wait_for_timeout(300)
         for f in range(freeze_frames):
-            page.screenshot(path=f"{tmpdir}/frame_{title_frames + anim_frames + f:05d}.png", type="png")
+            page.screenshot(path=f"{tmpdir}/frame_{title_frames + anim_frames + f:05d}.png", type="png", timeout=0)
 
         browser.close()
 
@@ -330,7 +337,7 @@ def render_line_video(timestamps, data, ylim, sectors, date_str, session, out_pa
         subprocess.run([
             "ffmpeg", "-y", "-i", out_path, "-i", str(bgm),
             "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
-            "-shortest", "-af", "volume=0.5", bgm_out
+            "-shortest", "-af", "volume=0.625", bgm_out
         ], capture_output=True)
         os.replace(bgm_out, out_path)
 
@@ -360,8 +367,10 @@ def render_bar_video(data, sectors, date_str, session, out_path, sse_price="--",
     freeze_frames = int(FREEZE_SEC * FPS)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": CANVAS_W, "height": CANVAS_H})
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(viewport={"width": CANVAS_W, "height": CANVAS_H}, device_scale_factor=1)
+        context.add_init_script("document.fonts.ready = Promise.resolve();")
+        page = context.new_page()
         page.goto(f"file://{html_path}")
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(1000)
@@ -371,21 +380,21 @@ def render_bar_video(data, sectors, date_str, session, out_path, sse_price="--",
         page.evaluate("window.__set_bar_progress(0)")
         page.wait_for_timeout(300)
         for f in range(intro_frames):
-            page.screenshot(path=f"{tmpdir}/frame_{f:05d}.png", type="png")
+            page.screenshot(path=f"{tmpdir}/frame_{f:05d}.png", type="png", timeout=0)
 
         for f in range(grow_frames):
             raw = (f + 1) / grow_frames
             t = raw ** 0.7 / (raw ** 0.7 + (1 - raw) ** 0.7)
             page.evaluate(f"window.__set_bar_progress({t})")
             page.wait_for_timeout(15)
-            page.screenshot(path=f"{tmpdir}/frame_{intro_frames + f:05d}.png", type="png")
+            page.screenshot(path=f"{tmpdir}/frame_{intro_frames + f:05d}.png", type="png", timeout=0)
             if (f + 1) % 100 == 0:
                 print(f"  {f+1}/{grow_frames}")
 
         page.evaluate("window.__set_bar_progress(1.0)")
         page.wait_for_timeout(300)
         for f in range(freeze_frames):
-            page.screenshot(path=f"{tmpdir}/frame_{intro_frames + grow_frames + f:05d}.png", type="png")
+            page.screenshot(path=f"{tmpdir}/frame_{intro_frames + grow_frames + f:05d}.png", type="png", timeout=0)
 
         browser.close()
 
@@ -403,7 +412,7 @@ def render_bar_video(data, sectors, date_str, session, out_path, sse_price="--",
         subprocess.run([
             "ffmpeg", "-y", "-i", out_path, "-i", str(bgm),
             "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
-            "-shortest", "-af", "volume=0.5", bgm_out
+            "-shortest", "-af", "volume=0.625", bgm_out
         ], capture_output=True)
         os.replace(bgm_out, out_path)
 
