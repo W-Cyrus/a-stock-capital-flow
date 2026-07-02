@@ -337,7 +337,7 @@ def render_line_video(timestamps, data, ylim, sectors, date_str, session, out_pa
         subprocess.run([
             "ffmpeg", "-y", "-i", out_path, "-i", str(bgm),
             "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
-            "-shortest", "-af", "volume=0.625", bgm_out
+            "-shortest", "-af", "volume=0.53", bgm_out
         ], capture_output=True)
         os.replace(bgm_out, out_path)
 
@@ -412,7 +412,7 @@ def render_bar_video(data, sectors, date_str, session, out_path, sse_price="--",
         subprocess.run([
             "ffmpeg", "-y", "-i", out_path, "-i", str(bgm),
             "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
-            "-shortest", "-af", "volume=0.625", bgm_out
+            "-shortest", "-af", "volume=0.53", bgm_out
         ], capture_output=True)
         os.replace(bgm_out, out_path)
 
